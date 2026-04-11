@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, staging]
+  push:
+    branches: [main]
+
+jobs:
+  # ── Quality gate ────────────────────────────────────────────────────────────
+  # TypeScript, ESLint, Jest coverage, npm audit, Snyk — must all pass before
+  # the build-check job runs. Every check uses --max-warnings 0 / strict flags
+  # so regressions are caught immediately, not accumulated as tech debt.
+  quality:
+    name: Quality gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npx eslint . --max-warnings 0
+
+      - name: Jest (coverage ≥ 70 % lines)
+        run: npx jest --coverage --coverageThreshold='{"global":{"lines":70}}'
+        env:
+          CI: true
+
+      - name: npm audit (high + critical only)
+        run: npm audit --audit-level=high
+
+      - name: Snyk security scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: '--severity-threshold=high'
+
+  # ── Expo export (bundle sanity check) ──────────────────────────────────────
+  # Verifies the Metro bundler can produce a complete export for both platforms.
+  # Catches missing imports, bad asset references, and Metro config errors that
+  # tsc / ESLint cannot see.
+  build-check:
+    name: Expo export (bundle check)
+    needs: quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Expo export — all platforms
+        run: npx expo export --platform all
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          EXPO_PUBLIC_GOOGLE_MAPS_KEY: ${{ secrets.EXPO_PUBLIC_GOOGLE_MAPS_KEY }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          # Prevents Expo CLI from prompting for interactive input in CI
+          CI: '1'
+          EXPO_NO_TELEMETRY: '1'
+
+      - name: Bundle size check (< 2 MB JS)
+        # Fail the build if the total uncompressed JS exceeds the 2 MB budget.
+        # Over-budget bundles hurt TTI on low-end Android devices — fix by
+        # verifying that heavy screens (map, camera) are not imported by barrel
+        # files and that no new large library was accidentally added.
+        run: |
+          TOTAL=$(find dist -name "*.js" -not -name "*.map" | xargs wc -c 2>/dev/null | tail -1 | awk '{print $1}')
+          BUDGET=2097152  # 2 MB in bytes
+          echo "Total JS bundle size: ${TOTAL} bytes (budget: ${BUDGET} bytes)"
+          if [ "${TOTAL}" -gt "${BUDGET}" ]; then
+            echo "Bundle size ${TOTAL} exceeds 2 MB budget. Run:"
+            echo "  npx expo export --platform all && npx @expo/bundle-explorer dist/"
+            echo "to identify the largest modules."
+            exit 1
+          fi
+
+      - name: Upload bundle report
+        # Always upload so you can inspect bundle composition on passing builds too
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: expo-bundle
+          path: dist/
+          retention-days: 7

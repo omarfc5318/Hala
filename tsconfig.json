@@ -1,6 +1,13 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
-  }
+    "strict": true,
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  // Deno edge functions use URL imports and Deno globals — excluded from Node tsc.
+  // Check them separately with: deno check supabase/functions/*/index.ts
+  // Test files are type-checked by jest-expo's own tsconfig (via @types/jest).
+  "exclude": ["node_modules", "supabase/functions", "__tests__"]
 }

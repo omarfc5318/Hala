@@ -1,0 +1,14 @@
+#!/bin/sh
+# Block commits containing secrets (requires: brew install gitleaks)
+if command -v gitleaks > /dev/null 2>&1; then
+  gitleaks detect --staged --no-banner
+  if [ $? -ne 0 ]; then
+    echo "gitleaks found secrets — commit blocked"
+    exit 1
+  fi
+else
+  echo "WARNING: gitleaks not installed — skipping secret scan (brew install gitleaks)"
+fi
+
+# Lint & format staged files
+npx lint-staged
